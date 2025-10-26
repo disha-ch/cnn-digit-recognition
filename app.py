@@ -4,12 +4,12 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 
-st.set_page_config(page_title="🧠 CNN Digit Classifier", page_icon="🖊️", layout="wide")
+st.set_page_config(page_title="Digit Classifier", page_icon="🖊️", layout="wide")
 
 # Load Model
 model = tf.keras.models.load_model("mnist_cnn_model.keras", safe_mode=False)
 
-st.title("🧠 Interactive CNN Digit Recognizer (0 ‑ 9)")
+st.title("Digit Recognizer (0 ‑ 9)")
 st.write("Draw a digit between **0 to 9** and see how the CNN predicts it!")
 
 col1, col2 = st.columns(2)
