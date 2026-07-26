@@ -1,5 +1,7 @@
 # CNN Digit Explorer
 
+Live app: [cnn-digit-recognition-app.vercel.app](https://cnn-digit-recognition-app.vercel.app/)
+
 This repo now ships as a Vite app that is easy to deploy on Vercel.
 
 The new experience is designed to be:
