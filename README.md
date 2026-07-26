@@ -2,8 +2,8 @@
 
 Live app: [cnn-digit-recognition-app.vercel.app](https://cnn-digit-recognition-app.vercel.app/)
 
-This repo now ships as a Vite app that is easy to deploy on Vercel and is ready to load a
-TensorFlow.js model in the browser.
+This repo now ships as a Vite app that is easy to deploy on Vercel and can use a Gemini-backed
+serverless function for digit predictions.
 
 The new experience is designed to be:
 
@@ -11,7 +11,7 @@ The new experience is designed to be:
 - visually polished and mobile-friendly
 - educational, with a clear explanation of what CNNs are and why they matter
 - interactive, with a drawing canvas and live demo-style prediction feedback
-- model-ready, so a converted CNN can be loaded from `public/model/model.json`
+- model-backed through a Vercel function, with Gemini as the classifier when configured
 
 ## Local Development
 
@@ -36,24 +36,24 @@ This project is Vercel-friendly out of the box:
 - `vercel.json` configures the static build output
 - `public/model/` is where the TensorFlow.js model files should live
 
-## TensorFlow.js Model
+## Predictions
 
-To make predictions with your trained CNN, convert `mnist_cnn_model.keras` into TensorFlow.js
-artifacts and place them in `public/model/`:
+The app now sends the canvas image to `/api/predict`.
 
-- `model.json`
-- `group1-shard*.bin`
+That serverless function:
 
-The app loads the model from `/model/model.json` in the browser using `tf.loadLayersModel(...)`.
+- accepts the drawn digit as a PNG data URL
+- calls Gemini using the `GEMINI_API_KEY` environment variable
+- returns a predicted digit plus probability bars
 
-If the converted files are missing, the app will still deploy, but the canvas will show a loading
-or unavailable state instead of a real prediction.
+If `GEMINI_API_KEY` is not set in Vercel, the app will still deploy, but prediction requests will
+show an error message until the key is added.
 
 ## Notes
 
 - The old Streamlit files are still present for reference, but the active app is now the Vite frontend.
-- I did not use or store the Gemini API key that was pasted in chat. Please rotate it and add it as an environment variable if you want to integrate Gemini later.
-- The app now expects a TensorFlow.js model in `public/model/` to produce real predictions.
+- I did not use or store the Gemini API key that was pasted in chat. Please rotate it and add it as
+  the `GEMINI_API_KEY` environment variable in Vercel.
 
 ## Next Upgrade
 
