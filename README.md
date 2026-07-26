@@ -34,6 +34,7 @@ This project is Vercel-friendly out of the box:
 ## Notes
 
 - The old Streamlit files are still present for reference, but the active app is now the Vite frontend.
+- `requirements.txt` has been removed from the repo root so Vercel treats this as a Node/Vite project instead of a Python deployment.
 - I did not use or store the Gemini API key that was pasted in chat. Please rotate it and add it as an environment variable if you want to integrate Gemini later.
 - The current canvas prediction is a lightweight browser-side MVP so the site stays fast and deployable everywhere.
 
