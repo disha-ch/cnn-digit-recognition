@@ -144,7 +144,6 @@ function draw(event) {
   const { x, y } = pointerPos(event);
   ctx.lineTo(x, y);
   ctx.stroke();
-  updatePrediction();
 }
 
 function stopDraw() {
@@ -174,123 +173,96 @@ function getPreprocessedInput() {
   return input;
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
+let pendingRequest = 0;
 
-function scoreDigitLikeModel(input) {
-  const sum = input.reduce((acc, value) => acc + value, 0);
-  if (!sum) return null;
-
-  let minX = 28;
-  let minY = 28;
-  let maxX = 0;
-  let maxY = 0;
-  let weightedX = 0;
-  let weightedY = 0;
-  let leftMass = 0;
-  let rightMass = 0;
-  let topMass = 0;
-  let bottomMass = 0;
-  let centerMass = 0;
-  let holeMass = 0;
-
-  for (let index = 0; index < input.length; index += 1) {
-    const value = input[index];
-    if (!value) continue;
-    const x = index % 28;
-    const y = Math.floor(index / 28);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    weightedX += x * value;
-    weightedY += y * value;
-    if (x < 14) leftMass += value;
-    else rightMass += value;
-    if (y < 14) topMass += value;
-    else bottomMass += value;
-    if (x >= 9 && x <= 18 && y >= 9 && y <= 18) centerMass += value;
-    if (x >= 7 && x <= 20 && y >= 7 && y <= 20 && x >= 11 && x <= 16 && y >= 11 && y <= 16) {
-      holeMass += value;
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    if (!blob) {
+      reject(new Error('No canvas data'));
+      return;
     }
-  }
-
-  const width = Math.max(1, maxX - minX + 1);
-  const height = Math.max(1, maxY - minY + 1);
-  const centerX = weightedX / sum;
-  const centerY = weightedY / sum;
-  const density = sum / (width * height);
-  const aspect = width / height;
-  const symmetry = 1 - clamp(Math.abs(leftMass - rightMass) / sum, 0, 1);
-  const verticalSymmetry = 1 - clamp(Math.abs(topMass - bottomMass) / sum, 0, 1);
-  const holeRatio = holeMass / sum;
-  const centerRatio = centerMass / sum;
-  const topRatio = topMass / sum;
-  const bottomRatio = bottomMass / sum;
-  const leftRatio = leftMass / sum;
-  const rightRatio = rightMass / sum;
-
-  const scores = {
-    0: 1.4 * holeRatio + 0.8 * symmetry + 0.5 * verticalSymmetry + 0.2 * density,
-    1: 1.0 * (1 - aspect) + 0.7 * (1 - leftRatio) + 0.7 * (1 - rightRatio) + 0.3 * density,
-    2: 0.9 * topRatio + 0.7 * (1 - holeRatio) + 0.6 * (1 - symmetry) + 0.3 * centerRatio,
-    3: 0.9 * rightRatio + 0.8 * (1 - leftRatio) + 0.5 * (1 - holeRatio) + 0.2 * density,
-    4: 0.9 * rightRatio + 0.7 * centerRatio + 0.4 * (1 - topRatio) + 0.4 * (1 - bottomRatio),
-    5: 0.9 * topRatio + 0.8 * leftRatio + 0.5 * (1 - holeRatio) + 0.3 * (1 - symmetry),
-    6: 1.0 * holeRatio + 0.6 * leftRatio + 0.6 * bottomRatio + 0.4 * (1 - verticalSymmetry),
-    7: 1.0 * topRatio + 0.7 * rightRatio + 0.5 * (1 - holeRatio) + 0.4 * (1 - density),
-    8: 1.3 * holeRatio + 0.9 * symmetry + 0.6 * verticalSymmetry + 0.3 * centerRatio,
-    9: 1.0 * holeRatio + 0.7 * rightRatio + 0.6 * topRatio + 0.4 * (1 - leftRatio),
-  };
-
-  return digits.map((digit) => Math.max(0.001, scores[digit] ?? 0.001));
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
-function updatePrediction() {
-  const input = getPreprocessedInput();
-  const raw = scoreDigitLikeModel(input);
-  if (!raw || !hasInk) {
+async function updatePrediction() {
+  if (!hasInk) {
     predictedDigit.textContent = 'Draw a digit to predict it';
     bars.innerHTML = '';
-    modelStatus.textContent = 'Draw a number on the canvas, then the app will preprocess it like app.py and show a prediction.';
+    modelStatus.textContent = 'Draw a number on the canvas to send it to the model.';
     return;
   }
 
-  const total = raw.reduce((sum, value) => sum + value, 0);
-  const probabilities = raw.map((value) => value / total);
-  const bestIndex = probabilities.indexOf(Math.max(...probabilities));
-  predictedDigit.textContent = `Predicted digit: ${bestIndex}`;
-  modelStatus.textContent = 'The canvas now mirrors the preprocessing flow from app.py.';
+  const requestId = ++pendingRequest;
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  const image = await blobToDataUrl(blob);
 
-  bars.innerHTML = probabilities
-    .map(
-      (prob, digit) => `
-        <div class="bar-row">
-          <span>${digit}</span>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(prob * 100)}%"></div></div>
-          <strong>${Math.round(prob * 100)}%</strong>
-        </div>
-      `,
-    )
-    .join('');
+  modelStatus.textContent = 'Predicting with the deployed TensorFlow model...';
+
+  try {
+    const response = await fetch('/api/predict', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ image }),
+    });
+
+    const data = await response.json();
+    if (requestId !== pendingRequest) return;
+    if (!response.ok) {
+      throw new Error(data.error || 'Prediction failed');
+    }
+
+    predictedDigit.textContent = `Predicted digit: ${data.predictedDigit}`;
+    modelStatus.textContent = 'Prediction generated from the original MNIST CNN.';
+
+    const probabilities = data.probabilities || [];
+    bars.innerHTML = probabilities
+      .map(
+        (prob, digit) => `
+          <div class="bar-row">
+            <span>${digit}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, Math.round(prob * 100))}%"></div></div>
+            <strong>${Math.round(prob * 100)}%</strong>
+          </div>
+        `,
+      )
+      .join('');
+  } catch (error) {
+    if (requestId !== pendingRequest) return;
+    predictedDigit.textContent = 'Prediction unavailable';
+    modelStatus.textContent = 'Could not reach the model endpoint. Please try again.';
+    bars.innerHTML = '';
+  }
 }
 
 canvas.addEventListener('pointerdown', startDraw);
 canvas.addEventListener('pointermove', draw);
-canvas.addEventListener('pointerup', stopDraw);
-canvas.addEventListener('pointerleave', stopDraw);
+canvas.addEventListener('pointerup', () => {
+  stopDraw();
+  updatePrediction();
+});
+canvas.addEventListener('pointerleave', () => {
+  stopDraw();
+  updatePrediction();
+});
 canvas.addEventListener('touchstart', startDraw, { passive: false });
 canvas.addEventListener('touchmove', draw, { passive: false });
-canvas.addEventListener('touchend', stopDraw);
+canvas.addEventListener('touchend', () => {
+  stopDraw();
+  updatePrediction();
+});
 clearBtn.addEventListener('click', () => {
   clearCanvas();
   hasInk = false;
+  pendingRequest += 1;
   predictedDigit.textContent = 'Draw a digit to predict it';
   bars.innerHTML = '';
   modelStatus.textContent = 'Canvas cleared. Draw a digit to see a prediction.';
-  updatePrediction();
 });
 
 clearCanvas();
-updatePrediction();

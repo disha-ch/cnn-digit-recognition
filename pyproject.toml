@@ -1,0 +1,11 @@
+[project]
+name = "cnn-digit-recognizer-api"
+version = "0.1.0"
+description = "TensorFlow inference API for MNIST digit recognition"
+requires-python = "~=3.13.0"
+dependencies = [
+  "tensorflow==2.20.0",
+  "pillow>=10.0.0",
+  "numpy>=1.26.0"
+]
+
