@@ -52,7 +52,7 @@ app.innerHTML = `
             The canvas now uses the same preprocessing pipeline as the original Streamlit app:
             invert, resize to 28×28, grayscale, normalize, then predict. The UI is ready for a
             real model backend, but the current deployment still needs an inference service to run
-            TensorFlow exactly like `app.py`.
+            TensorFlow exactly like app.py.
           </p>
           <div class="bars" id="bars"></div>
         </div>
