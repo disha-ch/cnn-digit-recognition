@@ -9,8 +9,8 @@ app.innerHTML = `
         <span class="eyebrow">Interactive AI demo</span>
         <h1>Meet Convolutional Neural Networks</h1>
         <p class="lede">
-          Draw a digit, explore how CNNs work, and learn why they are so effective at
-          recognizing images. This MVP is designed to be public, playful, and easy to explain.
+          Draw a digit, see a real CNN prediction, and understand why convolutional models are so
+          good at image recognition. This app is built to be educational, public, and trustworthy.
         </p>
         <div class="hero-actions">
           <a class="button primary" href="#playground">Try the canvas</a>
@@ -24,7 +24,7 @@ app.innerHTML = `
         </div>
         <div class="stat">
           <span class="stat-label">Why it matters</span>
-          <strong>It powers vision apps, quality checks, OCR, medical imaging, and more</strong>
+          <strong>It powers vision apps, OCR, medical imaging, and more</strong>
         </div>
       </div>
     </section>
@@ -45,13 +45,12 @@ app.innerHTML = `
         </div>
         <div class="prediction-panel">
           <div class="prediction-header">
-            <span class="eyebrow">Demo output</span>
-            <h3 id="predictedDigit">Draw a digit to predict it</h3>
+            <span class="eyebrow">Live output</span>
+            <h3 id="predictedDigit">Loading model...</h3>
           </div>
           <p class="muted" id="modelStatus">
-            This Vercel build keeps the interactive canvas and explains the CNN workflow, but the
-            original TensorFlow model cannot run inside Vercel's static frontend without a separate
-            inference service or a converted browser model.
+            TensorFlow.js is loading the browser model. If the converted files are present in
+            /public/model, predictions will use the real CNN.
           </p>
           <div class="bars" id="bars"></div>
         </div>
@@ -63,17 +62,16 @@ app.innerHTML = `
         <span class="eyebrow">What is a CNN?</span>
         <h2>A neural network built for images</h2>
         <p>
-          A convolutional neural network is a deep learning model that scans an image with small
-          filters. Those filters learn edges, curves, textures, and shapes, then combine them into
-          higher-level understanding.
+          A convolutional neural network scans images with small filters that learn edges, curves,
+          textures, and shapes, then combine them into high-level understanding.
         </p>
       </article>
       <article class="card info">
         <span class="eyebrow">Why it is important</span>
         <h2>It learns visual patterns automatically</h2>
         <p>
-          Instead of manually programming image rules, CNNs learn from data. That makes them strong
-          for tasks like classification, detection, segmentation, and handwriting recognition.
+          Instead of hand-coding rules, CNNs learn from data. That makes them strong for
+          classification, detection, segmentation, and handwriting recognition.
         </p>
       </article>
       <article class="card info">
@@ -105,9 +103,11 @@ const predictedDigit = document.querySelector('#predictedDigit');
 const bars = document.querySelector('#bars');
 const modelStatus = document.querySelector('#modelStatus');
 
-const digits = Array.from({ length: 10 }, (_, i) => i);
+const MODEL_URL = '/model/model.json';
+let model = null;
 let drawing = false;
 let hasInk = false;
+let predictToken = 0;
 
 function drawBackground() {
   ctx.fillStyle = '#f5efe6';
@@ -147,117 +147,76 @@ function draw(event) {
   ctx.stroke();
 }
 
-function stopDraw() {
+async function stopDraw() {
   drawing = false;
+  await updatePrediction();
 }
 
-function getPreprocessedInput() {
+function getPreprocessedTensor() {
   const offscreen = document.createElement('canvas');
   offscreen.width = 28;
   offscreen.height = 28;
   const offCtx = offscreen.getContext('2d');
   offCtx.drawImage(canvas, 0, 0, 28, 28);
-
   const imageData = offCtx.getImageData(0, 0, 28, 28).data;
-  const input = new Float32Array(28 * 28);
+  const values = new Float32Array(28 * 28);
 
   for (let i = 0; i < 28 * 28; i += 1) {
     const idx = i * 4;
-    const r = imageData[idx];
-    const g = imageData[idx + 1];
-    const b = imageData[idx + 2];
-    const grayscale = (r + g + b) / 3;
-    const inverted = (255 - grayscale) / 255;
-    input[i] = inverted;
+    const grayscale = (imageData[idx] + imageData[idx + 1] + imageData[idx + 2]) / 3;
+    values[i] = (255 - grayscale) / 255;
   }
 
-  return input;
+  return tf.tensor4d(values, [1, 28, 28, 1]);
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
+async function loadModel() {
+  try {
+    modelStatus.textContent = 'Loading the CNN model...';
+    model = await tf.loadLayersModel(MODEL_URL);
+    modelStatus.textContent = 'Model loaded. Draw a digit to predict it.';
+    predictedDigit.textContent = 'Draw a digit to predict it';
+  } catch (error) {
+    console.error(error);
+    modelStatus.textContent =
+      'Could not load /model/model.json yet. Add the TensorFlow.js converted files to public/model.';
+    predictedDigit.textContent = 'Model not available';
+    bars.innerHTML = '';
+  }
 }
 
-function updatePrediction() {
+async function updatePrediction() {
+  const token = ++predictToken;
+
   if (!hasInk) {
     predictedDigit.textContent = 'Draw a digit to predict it';
     bars.innerHTML = '';
-    modelStatus.textContent = 'Draw a number on the canvas to see the interactive preview.';
+    if (model) {
+      modelStatus.textContent = 'Draw a number on the canvas to see the live CNN prediction.';
+    }
     return;
   }
 
-  const input = getPreprocessedInput();
-  const totalInk = input.reduce((sum, value) => sum + value, 0);
-
-  if (!totalInk) {
-    predictedDigit.textContent = 'Draw a digit to predict it';
+  if (!model) {
     bars.innerHTML = '';
-    modelStatus.textContent = 'Draw a number on the canvas to see the interactive preview.';
     return;
   }
 
-  let minX = 28;
-  let minY = 28;
-  let maxX = 0;
-  let maxY = 0;
-  let leftMass = 0;
-  let rightMass = 0;
-  let topMass = 0;
-  let bottomMass = 0;
-  let centerMass = 0;
-  let holeMass = 0;
+  const input = getPreprocessedTensor();
+  const prediction = model.predict(input);
+  const probabilities = await prediction.data();
+  input.dispose();
+  prediction.dispose();
 
-  for (let index = 0; index < input.length; index += 1) {
-    const value = input[index];
-    if (!value) continue;
-    const x = index % 28;
-    const y = Math.floor(index / 28);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    if (x < 14) leftMass += value;
-    else rightMass += value;
-    if (y < 14) topMass += value;
-    else bottomMass += value;
-    if (x >= 9 && x <= 18 && y >= 9 && y <= 18) centerMass += value;
-    if (x >= 10 && x <= 17 && y >= 10 && y <= 17) holeMass += value;
-  }
+  if (token !== predictToken) return;
 
-  const width = Math.max(1, maxX - minX + 1);
-  const height = Math.max(1, maxY - minY + 1);
-  const density = totalInk / (width * height);
-  const aspect = width / height;
-  const symmetry = 1 - clamp(Math.abs(leftMass - rightMass) / totalInk, 0, 1);
-  const verticalSymmetry = 1 - clamp(Math.abs(topMass - bottomMass) / totalInk, 0, 1);
-  const holeRatio = holeMass / totalInk;
-  const centerRatio = centerMass / totalInk;
-  const topRatio = topMass / totalInk;
-  const bottomRatio = bottomMass / totalInk;
-  const leftRatio = leftMass / totalInk;
-  const rightRatio = rightMass / totalInk;
-
-  const raw = [
-    0.8 * holeRatio + 0.5 * symmetry + 0.3 * verticalSymmetry + 0.2 * density,
-    0.9 * (1 - aspect) + 0.5 * (1 - leftRatio) + 0.4 * (1 - rightRatio),
-    0.5 * topRatio + 0.4 * rightRatio + 0.3 * (1 - holeRatio),
-    0.6 * rightRatio + 0.4 * (1 - leftRatio) + 0.2 * density,
-    0.6 * rightRatio + 0.5 * centerRatio + 0.2 * (1 - topRatio),
-    0.6 * topRatio + 0.5 * leftRatio + 0.3 * (1 - holeRatio),
-    0.7 * holeRatio + 0.4 * leftRatio + 0.4 * bottomRatio + 0.2 * (1 - verticalSymmetry),
-    0.7 * topRatio + 0.4 * rightRatio + 0.3 * (1 - density),
-    0.9 * holeRatio + 0.6 * symmetry + 0.4 * verticalSymmetry + 0.2 * centerRatio,
-    0.7 * holeRatio + 0.5 * rightRatio + 0.3 * topRatio + 0.2 * (1 - leftRatio),
-  ].map((value) => Math.max(0.001, value));
-
-  const total = raw.reduce((sum, value) => sum + value, 0);
-  const probabilities = raw.map((value) => value / total);
-  const bestIndex = probabilities.indexOf(Math.max(...probabilities));
+  const probs = Array.from(probabilities);
+  const bestIndex = probs.indexOf(Math.max(...probs));
 
   predictedDigit.textContent = `Predicted digit: ${bestIndex}`;
-  modelStatus.textContent = 'This preview mirrors the original MNIST preprocessing, but it is still a lightweight Vercel-safe demo.';
+  modelStatus.textContent = 'This prediction is generated by the converted TensorFlow model in your browser.';
 
-  bars.innerHTML = probabilities
+  bars.innerHTML = probs
     .map(
       (prob, digit) => `
         <div class="bar-row">
@@ -272,26 +231,22 @@ function updatePrediction() {
 
 canvas.addEventListener('pointerdown', startDraw);
 canvas.addEventListener('pointermove', draw);
-canvas.addEventListener('pointerup', () => {
-  stopDraw();
-  updatePrediction();
-});
-canvas.addEventListener('pointerleave', () => {
-  stopDraw();
-  updatePrediction();
-});
+canvas.addEventListener('pointerup', stopDraw);
+canvas.addEventListener('pointerleave', stopDraw);
 canvas.addEventListener('touchstart', startDraw, { passive: false });
 canvas.addEventListener('touchmove', draw, { passive: false });
-canvas.addEventListener('touchend', () => {
-  stopDraw();
-  updatePrediction();
-});
-clearBtn.addEventListener('click', () => {
+canvas.addEventListener('touchend', stopDraw);
+
+clearBtn.addEventListener('click', async () => {
   clearCanvas();
   hasInk = false;
+  predictToken += 1;
   predictedDigit.textContent = 'Draw a digit to predict it';
   bars.innerHTML = '';
-  modelStatus.textContent = 'Canvas cleared. Draw a digit to see a prediction.';
+  modelStatus.textContent = model
+    ? 'Canvas cleared. Draw a digit to see a prediction.'
+    : 'Canvas cleared. Add the converted model files to start predicting.';
 });
 
 clearCanvas();
+tf.ready().then(loadModel);
