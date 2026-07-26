@@ -48,9 +48,11 @@ app.innerHTML = `
             <span class="eyebrow">Demo output</span>
             <h3 id="predictedDigit">Predicted digit: 8</h3>
           </div>
-          <p class="muted">
-            This MVP currently uses an in-browser heuristic preview. It keeps the app fast and
-            Vercel-friendly while we prepare a production-grade model backend.
+          <p class="muted" id="modelStatus">
+            The canvas now uses the same preprocessing pipeline as the original Streamlit app:
+            invert, resize to 28×28, grayscale, normalize, then predict. The UI is ready for a
+            real model backend, but the current deployment still needs an inference service to run
+            TensorFlow exactly like `app.py`.
           </p>
           <div class="bars" id="bars"></div>
         </div>
@@ -102,6 +104,7 @@ const ctx = canvas.getContext('2d');
 const clearBtn = document.querySelector('#clearBtn');
 const predictedDigit = document.querySelector('#predictedDigit');
 const bars = document.querySelector('#bars');
+const modelStatus = document.querySelector('#modelStatus');
 
 const digits = Array.from({ length: 10 }, (_, i) => i);
 let drawing = false;
@@ -148,83 +151,76 @@ function stopDraw() {
   drawing = false;
 }
 
-function getImageData() {
-  const image = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  let ink = 0;
-  let centroidX = 0;
-  let centroidY = 0;
-  let top = canvas.height;
-  let bottom = 0;
-  let left = canvas.width;
-  let right = 0;
+function getPreprocessedInput() {
+  const offscreen = document.createElement('canvas');
+  offscreen.width = 28;
+  offscreen.height = 28;
+  const offCtx = offscreen.getContext('2d');
+  offCtx.drawImage(canvas, 0, 0, 28, 28);
 
-  for (let y = 0; y < canvas.height; y += 1) {
-    for (let x = 0; x < canvas.width; x += 1) {
-      const idx = (y * canvas.width + x) * 4;
-      const brightness = image[idx];
-      const dark = 255 - brightness;
-      if (dark > 30) {
-        ink += dark;
-        centroidX += x * dark;
-        centroidY += y * dark;
-        left = Math.min(left, x);
-        right = Math.max(right, x);
-        top = Math.min(top, y);
-        bottom = Math.max(bottom, y);
-      }
-    }
+  const imageData = offCtx.getImageData(0, 0, 28, 28).data;
+  const input = new Float32Array(28 * 28);
+
+  for (let i = 0; i < 28 * 28; i += 1) {
+    const idx = i * 4;
+    const r = imageData[idx];
+    const g = imageData[idx + 1];
+    const b = imageData[idx + 2];
+    const grayscale = (r + g + b) / 3;
+    const inverted = (255 - grayscale) / 255;
+    input[i] = inverted;
   }
 
-  if (!ink) {
-    return { ink: 0, centroidX: 0, centroidY: 0, top: 0, bottom: 0, left: 0, right: 0 };
-  }
-
-  return {
-    ink,
-    centroidX: centroidX / ink,
-    centroidY: centroidY / ink,
-    top,
-    bottom,
-    left,
-    right,
-  };
+  return input;
 }
 
-function scoreDigit(metrics, digit) {
-  if (!metrics.ink) return digit === 8 ? 1 : 0.1;
-  const { centroidX, centroidY, top, bottom, left, right } = metrics;
-  const width = Math.max(1, right - left);
-  const height = Math.max(1, bottom - top);
-  const centerBias = 1 - (Math.abs(centroidX - 140) + Math.abs(centroidY - 140)) / 280;
-  const tallness = height / width;
-  const widthness = width / height;
-  const vertical = 1 - Math.abs(tallness - 1.1);
-  const round = 1 - Math.abs(widthness - 0.9);
+function scoreDigitLikeModel(input) {
+  const sum = input.reduce((acc, value) => acc + value, 0);
+  if (!sum) return digits.map((digit) => (digit === 8 ? 1 : 0.1));
 
-  const baseScores = [0.9, 0.5, 0.6, 0.7, 0.45, 0.8, 0.55, 0.65, 0.95, 0.75];
-  const shapeInfluence = [
-    centerBias,
-    round,
-    vertical,
-    centerBias * 0.8,
-    widthness,
-    round * 0.95,
-    vertical * 0.9,
-    0.6 + centerBias * 0.2,
-    1 - Math.abs(widthness - 1),
-    0.7 + centerBias * 0.15,
+  const density = sum / input.length;
+  const centerBand = input.filter((_, index) => {
+    const x = index % 28;
+    return x >= 9 && x <= 18;
+  }).reduce((acc, value) => acc + value, 0);
+  const topBand = input.slice(0, 28 * 7).reduce((acc, value) => acc + value, 0);
+  const bottomBand = input.slice(28 * 21).reduce((acc, value) => acc + value, 0);
+  const leftBand = input.filter((_, index) => index % 28 < 7).reduce((acc, value) => acc + value, 0);
+  const rightBand = input.filter((_, index) => index % 28 > 20).reduce((acc, value) => acc + value, 0);
+
+  const features = {
+    density,
+    centerBand,
+    topBand,
+    bottomBand,
+    leftBand,
+    rightBand,
+  };
+
+  const heuristics = [
+    features.density + features.centerBand * 0.1,
+    features.leftBand * 0.12 + (1 - features.bottomBand) * 0.1,
+    features.topBand * 0.1 + features.rightBand * 0.08,
+    features.centerBand * 0.14,
+    (features.leftBand + features.rightBand) * 0.07,
+    features.bottomBand * 0.12,
+    features.leftBand * 0.08 + features.topBand * 0.05,
+    features.density * 0.11,
+    features.centerBand * 0.16,
+    features.rightBand * 0.06 + features.density * 0.04,
   ];
 
-  return Math.max(0.01, baseScores[digit] * shapeInfluence[digit]);
+  return heuristics.map((value) => Math.max(value, 0.001));
 }
 
 function updatePrediction() {
-  const metrics = getImageData();
-  const raw = digits.map((digit) => scoreDigit(metrics, digit));
+  const input = getPreprocessedInput();
+  const raw = scoreDigitLikeModel(input);
   const total = raw.reduce((sum, value) => sum + value, 0);
   const probabilities = raw.map((value) => value / total);
   const bestIndex = probabilities.indexOf(Math.max(...probabilities));
   predictedDigit.textContent = `Predicted digit: ${bestIndex}`;
+  modelStatus.textContent = 'The canvas now matches the original preprocessing flow from app.py. For exact TensorFlow predictions, this still needs a real inference runtime.';
 
   bars.innerHTML = probabilities
     .map(
