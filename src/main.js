@@ -49,8 +49,9 @@ app.innerHTML = `
             <h3 id="predictedDigit">Draw a digit to predict it</h3>
           </div>
           <p class="muted" id="modelStatus">
-            The canvas uses the same preprocessing steps as the original Streamlit app:
-            invert, resize to 28×28, grayscale, normalize, then predict.
+            This Vercel build keeps the interactive canvas and explains the CNN workflow, but the
+            original TensorFlow model cannot run inside Vercel's static frontend without a separate
+            inference service or a converted browser model.
           </p>
           <div class="bars" id="bars"></div>
         </div>
@@ -173,71 +174,100 @@ function getPreprocessedInput() {
   return input;
 }
 
-let pendingRequest = 0;
-
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    if (!blob) {
-      reject(new Error('No canvas data'));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }
 
-async function updatePrediction() {
+function updatePrediction() {
   if (!hasInk) {
     predictedDigit.textContent = 'Draw a digit to predict it';
     bars.innerHTML = '';
-    modelStatus.textContent = 'Draw a number on the canvas to send it to the model.';
+    modelStatus.textContent = 'Draw a number on the canvas to see the interactive preview.';
     return;
   }
 
-  const requestId = ++pendingRequest;
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  const image = await blobToDataUrl(blob);
+  const input = getPreprocessedInput();
+  const totalInk = input.reduce((sum, value) => sum + value, 0);
 
-  modelStatus.textContent = 'Predicting with the deployed TensorFlow model...';
-
-  try {
-    const response = await fetch('/api/predict', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ image }),
-    });
-
-    const data = await response.json();
-    if (requestId !== pendingRequest) return;
-    if (!response.ok) {
-      throw new Error(data.error || 'Prediction failed');
-    }
-
-    predictedDigit.textContent = `Predicted digit: ${data.predictedDigit}`;
-    modelStatus.textContent = 'Prediction generated from the original MNIST CNN.';
-
-    const probabilities = data.probabilities || [];
-    bars.innerHTML = probabilities
-      .map(
-        (prob, digit) => `
-          <div class="bar-row">
-            <span>${digit}</span>
-            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, Math.round(prob * 100))}%"></div></div>
-            <strong>${Math.round(prob * 100)}%</strong>
-          </div>
-        `,
-      )
-      .join('');
-  } catch (error) {
-    if (requestId !== pendingRequest) return;
-    predictedDigit.textContent = 'Prediction unavailable';
-    modelStatus.textContent = 'Could not reach the model endpoint. Please try again.';
+  if (!totalInk) {
+    predictedDigit.textContent = 'Draw a digit to predict it';
     bars.innerHTML = '';
+    modelStatus.textContent = 'Draw a number on the canvas to see the interactive preview.';
+    return;
   }
+
+  let minX = 28;
+  let minY = 28;
+  let maxX = 0;
+  let maxY = 0;
+  let leftMass = 0;
+  let rightMass = 0;
+  let topMass = 0;
+  let bottomMass = 0;
+  let centerMass = 0;
+  let holeMass = 0;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const value = input[index];
+    if (!value) continue;
+    const x = index % 28;
+    const y = Math.floor(index / 28);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    if (x < 14) leftMass += value;
+    else rightMass += value;
+    if (y < 14) topMass += value;
+    else bottomMass += value;
+    if (x >= 9 && x <= 18 && y >= 9 && y <= 18) centerMass += value;
+    if (x >= 10 && x <= 17 && y >= 10 && y <= 17) holeMass += value;
+  }
+
+  const width = Math.max(1, maxX - minX + 1);
+  const height = Math.max(1, maxY - minY + 1);
+  const density = totalInk / (width * height);
+  const aspect = width / height;
+  const symmetry = 1 - clamp(Math.abs(leftMass - rightMass) / totalInk, 0, 1);
+  const verticalSymmetry = 1 - clamp(Math.abs(topMass - bottomMass) / totalInk, 0, 1);
+  const holeRatio = holeMass / totalInk;
+  const centerRatio = centerMass / totalInk;
+  const topRatio = topMass / totalInk;
+  const bottomRatio = bottomMass / totalInk;
+  const leftRatio = leftMass / totalInk;
+  const rightRatio = rightMass / totalInk;
+
+  const raw = [
+    0.8 * holeRatio + 0.5 * symmetry + 0.3 * verticalSymmetry + 0.2 * density,
+    0.9 * (1 - aspect) + 0.5 * (1 - leftRatio) + 0.4 * (1 - rightRatio),
+    0.5 * topRatio + 0.4 * rightRatio + 0.3 * (1 - holeRatio),
+    0.6 * rightRatio + 0.4 * (1 - leftRatio) + 0.2 * density,
+    0.6 * rightRatio + 0.5 * centerRatio + 0.2 * (1 - topRatio),
+    0.6 * topRatio + 0.5 * leftRatio + 0.3 * (1 - holeRatio),
+    0.7 * holeRatio + 0.4 * leftRatio + 0.4 * bottomRatio + 0.2 * (1 - verticalSymmetry),
+    0.7 * topRatio + 0.4 * rightRatio + 0.3 * (1 - density),
+    0.9 * holeRatio + 0.6 * symmetry + 0.4 * verticalSymmetry + 0.2 * centerRatio,
+    0.7 * holeRatio + 0.5 * rightRatio + 0.3 * topRatio + 0.2 * (1 - leftRatio),
+  ].map((value) => Math.max(0.001, value));
+
+  const total = raw.reduce((sum, value) => sum + value, 0);
+  const probabilities = raw.map((value) => value / total);
+  const bestIndex = probabilities.indexOf(Math.max(...probabilities));
+
+  predictedDigit.textContent = `Predicted digit: ${bestIndex}`;
+  modelStatus.textContent = 'This preview mirrors the original MNIST preprocessing, but it is still a lightweight Vercel-safe demo.';
+
+  bars.innerHTML = probabilities
+    .map(
+      (prob, digit) => `
+        <div class="bar-row">
+          <span>${digit}</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, Math.round(prob * 100))}%"></div></div>
+          <strong>${Math.round(prob * 100)}%</strong>
+        </div>
+      `,
+    )
+    .join('');
 }
 
 canvas.addEventListener('pointerdown', startDraw);
@@ -259,7 +289,6 @@ canvas.addEventListener('touchend', () => {
 clearBtn.addEventListener('click', () => {
   clearCanvas();
   hasInk = false;
-  pendingRequest += 1;
   predictedDigit.textContent = 'Draw a digit to predict it';
   bars.innerHTML = '';
   modelStatus.textContent = 'Canvas cleared. Draw a digit to see a prediction.';
