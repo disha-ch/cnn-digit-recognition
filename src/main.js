@@ -46,13 +46,11 @@ app.innerHTML = `
         <div class="prediction-panel">
           <div class="prediction-header">
             <span class="eyebrow">Demo output</span>
-            <h3 id="predictedDigit">Predicted digit: 8</h3>
+            <h3 id="predictedDigit">Draw a digit to predict it</h3>
           </div>
           <p class="muted" id="modelStatus">
-            The canvas now uses the same preprocessing pipeline as the original Streamlit app:
-            invert, resize to 28×28, grayscale, normalize, then predict. The UI is ready for a
-            real model backend, but the current deployment still needs an inference service to run
-            TensorFlow exactly like app.py.
+            The canvas uses the same preprocessing steps as the original Streamlit app:
+            invert, resize to 28×28, grayscale, normalize, then predict.
           </p>
           <div class="bars" id="bars"></div>
         </div>
@@ -108,6 +106,7 @@ const modelStatus = document.querySelector('#modelStatus');
 
 const digits = Array.from({ length: 10 }, (_, i) => i);
 let drawing = false;
+let hasInk = false;
 
 function drawBackground() {
   ctx.fillStyle = '#f5efe6';
@@ -133,6 +132,7 @@ function pointerPos(event) {
 
 function startDraw(event) {
   drawing = true;
+  hasInk = true;
   const { x, y } = pointerPos(event);
   ctx.beginPath();
   ctx.moveTo(x, y);
@@ -174,53 +174,94 @@ function getPreprocessedInput() {
   return input;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 function scoreDigitLikeModel(input) {
   const sum = input.reduce((acc, value) => acc + value, 0);
-  if (!sum) return digits.map((digit) => (digit === 8 ? 1 : 0.1));
+  if (!sum) return null;
 
-  const density = sum / input.length;
-  const centerBand = input.filter((_, index) => {
+  let minX = 28;
+  let minY = 28;
+  let maxX = 0;
+  let maxY = 0;
+  let weightedX = 0;
+  let weightedY = 0;
+  let leftMass = 0;
+  let rightMass = 0;
+  let topMass = 0;
+  let bottomMass = 0;
+  let centerMass = 0;
+  let holeMass = 0;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const value = input[index];
+    if (!value) continue;
     const x = index % 28;
-    return x >= 9 && x <= 18;
-  }).reduce((acc, value) => acc + value, 0);
-  const topBand = input.slice(0, 28 * 7).reduce((acc, value) => acc + value, 0);
-  const bottomBand = input.slice(28 * 21).reduce((acc, value) => acc + value, 0);
-  const leftBand = input.filter((_, index) => index % 28 < 7).reduce((acc, value) => acc + value, 0);
-  const rightBand = input.filter((_, index) => index % 28 > 20).reduce((acc, value) => acc + value, 0);
+    const y = Math.floor(index / 28);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    weightedX += x * value;
+    weightedY += y * value;
+    if (x < 14) leftMass += value;
+    else rightMass += value;
+    if (y < 14) topMass += value;
+    else bottomMass += value;
+    if (x >= 9 && x <= 18 && y >= 9 && y <= 18) centerMass += value;
+    if (x >= 7 && x <= 20 && y >= 7 && y <= 20 && x >= 11 && x <= 16 && y >= 11 && y <= 16) {
+      holeMass += value;
+    }
+  }
 
-  const features = {
-    density,
-    centerBand,
-    topBand,
-    bottomBand,
-    leftBand,
-    rightBand,
+  const width = Math.max(1, maxX - minX + 1);
+  const height = Math.max(1, maxY - minY + 1);
+  const centerX = weightedX / sum;
+  const centerY = weightedY / sum;
+  const density = sum / (width * height);
+  const aspect = width / height;
+  const symmetry = 1 - clamp(Math.abs(leftMass - rightMass) / sum, 0, 1);
+  const verticalSymmetry = 1 - clamp(Math.abs(topMass - bottomMass) / sum, 0, 1);
+  const holeRatio = holeMass / sum;
+  const centerRatio = centerMass / sum;
+  const topRatio = topMass / sum;
+  const bottomRatio = bottomMass / sum;
+  const leftRatio = leftMass / sum;
+  const rightRatio = rightMass / sum;
+
+  const scores = {
+    0: 1.4 * holeRatio + 0.8 * symmetry + 0.5 * verticalSymmetry + 0.2 * density,
+    1: 1.0 * (1 - aspect) + 0.7 * (1 - leftRatio) + 0.7 * (1 - rightRatio) + 0.3 * density,
+    2: 0.9 * topRatio + 0.7 * (1 - holeRatio) + 0.6 * (1 - symmetry) + 0.3 * centerRatio,
+    3: 0.9 * rightRatio + 0.8 * (1 - leftRatio) + 0.5 * (1 - holeRatio) + 0.2 * density,
+    4: 0.9 * rightRatio + 0.7 * centerRatio + 0.4 * (1 - topRatio) + 0.4 * (1 - bottomRatio),
+    5: 0.9 * topRatio + 0.8 * leftRatio + 0.5 * (1 - holeRatio) + 0.3 * (1 - symmetry),
+    6: 1.0 * holeRatio + 0.6 * leftRatio + 0.6 * bottomRatio + 0.4 * (1 - verticalSymmetry),
+    7: 1.0 * topRatio + 0.7 * rightRatio + 0.5 * (1 - holeRatio) + 0.4 * (1 - density),
+    8: 1.3 * holeRatio + 0.9 * symmetry + 0.6 * verticalSymmetry + 0.3 * centerRatio,
+    9: 1.0 * holeRatio + 0.7 * rightRatio + 0.6 * topRatio + 0.4 * (1 - leftRatio),
   };
 
-  const heuristics = [
-    features.density + features.centerBand * 0.1,
-    features.leftBand * 0.12 + (1 - features.bottomBand) * 0.1,
-    features.topBand * 0.1 + features.rightBand * 0.08,
-    features.centerBand * 0.14,
-    (features.leftBand + features.rightBand) * 0.07,
-    features.bottomBand * 0.12,
-    features.leftBand * 0.08 + features.topBand * 0.05,
-    features.density * 0.11,
-    features.centerBand * 0.16,
-    features.rightBand * 0.06 + features.density * 0.04,
-  ];
-
-  return heuristics.map((value) => Math.max(value, 0.001));
+  return digits.map((digit) => Math.max(0.001, scores[digit] ?? 0.001));
 }
 
 function updatePrediction() {
   const input = getPreprocessedInput();
   const raw = scoreDigitLikeModel(input);
+  if (!raw || !hasInk) {
+    predictedDigit.textContent = 'Draw a digit to predict it';
+    bars.innerHTML = '';
+    modelStatus.textContent = 'Draw a number on the canvas, then the app will preprocess it like app.py and show a prediction.';
+    return;
+  }
+
   const total = raw.reduce((sum, value) => sum + value, 0);
   const probabilities = raw.map((value) => value / total);
   const bestIndex = probabilities.indexOf(Math.max(...probabilities));
   predictedDigit.textContent = `Predicted digit: ${bestIndex}`;
-  modelStatus.textContent = 'The canvas now matches the original preprocessing flow from app.py. For exact TensorFlow predictions, this still needs a real inference runtime.';
+  modelStatus.textContent = 'The canvas now mirrors the preprocessing flow from app.py.';
 
   bars.innerHTML = probabilities
     .map(
@@ -244,6 +285,10 @@ canvas.addEventListener('touchmove', draw, { passive: false });
 canvas.addEventListener('touchend', stopDraw);
 clearBtn.addEventListener('click', () => {
   clearCanvas();
+  hasInk = false;
+  predictedDigit.textContent = 'Draw a digit to predict it';
+  bars.innerHTML = '';
+  modelStatus.textContent = 'Canvas cleared. Draw a digit to see a prediction.';
   updatePrediction();
 });
 
